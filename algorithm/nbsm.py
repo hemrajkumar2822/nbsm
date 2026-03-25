@@ -856,7 +856,7 @@ def nbsm_decode(image_path, auxiliary_information, encryption_key, verbose=False
 
 if __name__ == "__main__":
 
-    IMAGE_PATH     = "../assets/image.jpg"
+    IMAGE_PATH     = "../assets/lion.jpg"
     SECRET_MESSAGE = "Check whether the given image can feasibly embed the message using NBSM (gap-based matching). Uses empirical matching probability p to estimate expected gaps."
     SHARED_KEY     = "Hemraj@321"
 
