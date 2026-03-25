@@ -420,56 +420,56 @@ def _bytes_to_bits(raw_bytes, original_bit_length):
 #     return feasible, stats
 
 
-def check_feasibility(bitstream, msg_bits, safety_factor=1.2, min_p=0.01):
-    N = len(bitstream)
-    K = len(msg_bits)
-    # ── Basic validation ─────────────────────────────────────────
-    if N == 0 or K == 0:
-        return False, {"reason": "Empty bitstream or message"}
+# def check_feasibility(bitstream, msg_bits, safety_factor=1.2, min_p=0.01):
+#     N = len(bitstream)
+#     K = len(msg_bits)
+#     # ── Basic validation ─────────────────────────────────────────
+#     if N == 0 or K == 0:
+#         return False, {"reason": "Empty bitstream or message"}
 
-    # ── Count bits (fast, no loop over both) ─────────────────────
-    ones_B = bitstream.count('1')
-    ones_M = msg_bits.count('1')
+#     # ── Count bits (fast, no loop over both) ─────────────────────
+#     ones_B = bitstream.count('1')
+#     ones_M = msg_bits.count('1')
 
-    # ── Probabilities ────────────────────────────────────────────
-    P_B1 = ones_B / N
-    P_M1 = ones_M / K
+#     # ── Probabilities ────────────────────────────────────────────
+#     P_B1 = ones_B / N
+#     P_M1 = ones_M / K
 
-    # Avoid recomputing zeros
-    P_B0 = 1.0 - P_B1
-    P_M0 = 1.0 - P_M1
+#     # Avoid recomputing zeros
+#     P_B0 = 1.0 - P_B1
+#     P_M0 = 1.0 - P_M1
 
-    # ── Matching probability ─────────────────────────────────────
-    p = P_B0 * P_M0 + P_B1 * P_M1
+#     # ── Matching probability ─────────────────────────────────────
+#     p = P_B0 * P_M0 + P_B1 * P_M1
 
-    # ── Edge cases ───────────────────────────────────────────────
-    if p <= min_p:
-        return False, {
-            "p": p,
-            "reason": "Matching probability too low"
-        }
+#     # ── Edge cases ───────────────────────────────────────────────
+#     if p <= min_p:
+#         return False, {
+#             "p": p,
+#             "reason": "Matching probability too low"
+#         }
 
-    # ── Expected gap ─────────────────────────────────────────────
-    expected_gap = 1.0 / p
+#     # ── Expected gap ─────────────────────────────────────────────
+#     expected_gap = 1.0 / p
 
-    # ── Required scan length ─────────────────────────────────────
-    required_bits = K * expected_gap # * safety_factor
+#     # ── Required scan length ─────────────────────────────────────
+#     required_bits = K * expected_gap # * safety_factor
 
-    feasible = required_bits <= N
+#     feasible = required_bits <= N
 
-    stats = {
-        "p": float(p),
-        "expected_gap": float(expected_gap),
-        "required_bits": float(required_bits),
-        "available_bits": int(N),
-        "message_bits": int(K),
-        "utilization_ratio": float(required_bits / N)
-    }
+#     stats = {
+#         "p": float(p),
+#         "expected_gap": float(expected_gap),
+#         "required_bits": float(required_bits),
+#         "available_bits": int(N),
+#         "message_bits": int(K),
+#         "utilization_ratio": float(required_bits / N)
+#     }
 
-    print("Feasibility check stats:")
-    # print(stats)
+#     print("Feasibility check stats:")
+#     # print(stats)
 
-    return feasible, stats
+#     return feasible, stats
 
 
 # ─────────────────────────────────────────────
@@ -541,22 +541,12 @@ def parse_auxiliary_information(auxiliary_string):
     return message_hash, nonce, tag, ciphertext
 
 
-def find_gaps(message_bits, encryption_key, bitstream, N, K):
+def find_gaps(message_bits, encryption_key, bitstream):
+    K = len(message_bits)
+    N = len(bitstream)
     gaps = []
     position_scanned = []
     total_scanned = 0
-
-    feasible, stats = check_feasibility(bitstream, message_bits, encryption_key)
-    print("statistics for feasibility")
-    print(stats)
-
-    # if not feasible:
-    #     raise ValueError(
-    #         f"Image is not feasible for embedding the message. "
-    #         f"Matching probability p = {stats['p']:.4f} is too low. "
-    #         f"Expected gap = {stats['expected_gap']:.2f} bits, "
-    #         f"which exceeds the image capacity."
-    #     )
 
     for i in range(K):
         target_bit = message_bits[i]
@@ -577,7 +567,6 @@ def find_gaps(message_bits, encryption_key, bitstream, N, K):
 
         gaps.append(gap)
         position_scanned.append(gap+1)
-    print("average: ", sum(position_scanned)/len(position_scanned))
     return gaps, total_scanned, position_scanned
 
 # ─────────────────────────────────────────────
@@ -621,6 +610,7 @@ def nbsm_encode(image_path, message, encryption_key, verbose=False):
     # ── Step 2: Convert message M to bit string ───────────────────────────
     message_bits = message_to_bits(message)
     K = len(message_bits)
+
     message_length_bytes = len(message.encode('utf-8'))
 
     if K > N // 2:
@@ -643,7 +633,7 @@ def nbsm_encode(image_path, message, encryption_key, verbose=False):
         print(f"[ENCODE] SHA-256 hash      : {message_hash}")
 
     # ── Step 4: Build gap list L using Φ(K, i) per message bit ───────────
-    gaps, total_scanned, position_scanned = find_gaps(message_bits=message_bits, encryption_key=encryption_key, bitstream=bitstream, N=N, K=K)
+    gaps, total_scanned, position_scanned  = find_gaps(message_bits=message_bits, encryption_key=encryption_key, bitstream=bitstream)
 
     if verbose:
         print(f"[ENCODE] Bits matched      : {K}/{K}")
@@ -707,8 +697,8 @@ def nbsm_encode(image_path, message, encryption_key, verbose=False):
         'message_length_bytes'    : message_length_bytes,
         'total_bits_scanned'      : total_scanned,
         'scan_efficiency'         : total_scanned / N,
-        'mean_gap'                : float(np.mean(gaps)),
-        'var_gap'                 : float(np.var(gaps)),
+        'mean_gap'                : float(np.mean(position_scanned)),
+        'var_gap'                 : float(np.var(position_scanned)),
         'elias_key_bits'          : elias_bits,
         'bits_per_message_bit'    : elias_bits / K,
         'entropy_lower_bound_bits': 2 * K,
@@ -866,8 +856,8 @@ def nbsm_decode(image_path, auxiliary_information, encryption_key, verbose=False
 
 if __name__ == "__main__":
 
-    IMAGE_PATH     = "../assets/black-dog-gray-srgb.png"
-    SECRET_MESSAGE = "Hello, NBSM World!"
+    IMAGE_PATH     = "../assets/image.jpg"
+    SECRET_MESSAGE = "Check whether the given image can feasibly embed the message using NBSM (gap-based matching). Uses empirical matching probability p to estimate expected gaps."
     SHARED_KEY     = "Hemraj@321"
 
     print("=" * 60)
