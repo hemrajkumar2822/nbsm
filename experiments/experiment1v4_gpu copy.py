@@ -28,6 +28,31 @@ except Exception:
 import numpy as np             # always import numpy for matplotlib / scipy
 
 
+def estimate_p_from_image(bitstream):
+    """
+    p = P(cover bit = 1) directly from raw bit counts.
+    This is the image-only property that Theorem 1 depends on.
+    Under Assumption 1, p should be 0.5.
+    """
+    bits  = np.array(list(bitstream), dtype=np.uint8)
+    ones  = int(np.sum(bits == 1))  
+    N     = len(bits)
+    p1    = ones / N        # P(bit = 1)
+    p0    = 1.0 - p1        # P(bit = 0)
+    # Matching probability when target bit is equally likely 0 or 1:
+    # p = P(match) = P(cover=0)*P(msg=0) + P(cover=1)*P(msg=1)
+    # For a uniform message: P(msg=0) = P(msg=1) = 0.5
+    # p = 0.5 * p0 + 0.5 * p1 = 0.5 always -- not useful!
+    # 
+    # Instead use p = P(cover bit = 1) as the geometric parameter.
+    # The gap G_i ~ Geometric(p_match) where p_match depends on target bit:
+    #   when target=1: p_match = p1 (prob cover bit is 1)
+    #   when target=0: p_match = p0 (prob cover bit is 0)
+    # Overall E[G] = 0.5 * 1/p1 + 0.5 * 1/p0  (average over target bits)
+    # NOT 1/p_match directly.
+    return p1, p0
+
+
 def _to_numpy(arr):
     """Convert a CuPy or NumPy array to a plain NumPy array."""
     if GPU_AVAILABLE and isinstance(arr, cp.ndarray):
@@ -43,7 +68,7 @@ KEY = "hedkjkeijkdj2343"
 # ── Plot: Theorem 1 Histogram (Fig 2 for paper) ─────────────────────────────
 
 def plot_theorem1_histogram(image_means, image_vars, output_path,
-                             all_gaps_A, dataset_name, message_size):
+                             gap_counter, dataset_name, message_size):
     """
     Generate Figure 2 for the paper: Theorem 1 experimental verification.
 
@@ -182,7 +207,7 @@ def plot_theorem1_histogram(image_means, image_vars, output_path,
     k_vals   = np.arange(1, 16)
     theo_pmf = 0.5 * (0.5 ** (k_vals - 1))
 
-    counts = Counter(all_gaps_A)
+    counts = gap_counter
     total  = len(all_gaps_A)
     total_shown = sum(counts.get(k, 0) for k in k_vals)
 
@@ -251,9 +276,9 @@ def run(image_folder, max_images, message, dataset_name, output_path="./results"
         print(f"ERROR: No images in '{image_folder}'")
         sys.exit(1)
 
-    # rng = np.random.default_rng(0)
-    # if len(image_files) > max_images:
-    #     image_files = list(rng.choice(image_files, max_images, replace=False))
+    rng = np.random.default_rng(0)
+    if len(image_files) > max_images:
+        image_files = list(rng.choice(image_files, max_images, replace=False))
 
     message_bits    = message_to_bits(message)
     message_bit_len = len(message_bits)
@@ -266,42 +291,39 @@ def run(image_folder, max_images, message, dataset_name, output_path="./results"
 
     image_means = []
     image_vars  = []
-    all_gaps_A  = []
+    #all_gaps_A  = []
 
-    processed = 0
     for idx, img_file in enumerate(image_files):
         img_path     = os.path.join(image_folder, img_file)
         bitstream    = image_to_bitstream(image_path=img_path)
-        bitstream_len = len(bitstream)
 
         try:
-            _, _, positions_scanned, stats = find_gaps(
+            _, _, positions_scanned = find_gaps(
                 message_bits=message_bits,
                 encryption_key=KEY,
-                bitstream=bitstream,
-                N=bitstream_len,
-                K=message_bit_len
+                bitstream=bitstream
             )
-        except Exception as e:
-            print(f"  [ERROR] {img_file}: {str(e)}")
+        except Exception as err:
+            print(f"Skipping: {err}")
             continue
 
         # ── GPU-accelerated statistics ────────────────────────────────────
         mean_g, var_g, g_gpu = compute_gap_stats(positions_scanned)
         # ─────────────────────────────────────────────────────────────────
+        from collections import Counter
+        gap_counter = Counter()
 
         image_means.append(mean_g)
         image_vars.append(var_g)
 
         if 1.5 <= mean_g <= 2.5:           # Group A
             # Move back to CPU list for Counter (CPU-only operation)
-            all_gaps_A.extend(_to_numpy(g_gpu).tolist())
+            # all_gaps_A.extend(_to_numpy(g_gpu).tolist())
 
-        print(f"[{idx+1:>4}] {img_file:<30}  mean={mean_g:.4f}  var={var_g:.4f}  {stats}")
-        processed += 1
-        if processed >= max_images:
-            print(f"Reached max_images={max_images}, stopping.")
-            break
+            gaps_cpu = _to_numpy(g_gpu)
+            gap_counter.update(gaps_cpu)
+
+        print(f"[{idx+1:>4}] {img_file:<30}  mean={mean_g:.4f}  var={var_g:.4f}")
 
     # ── Aggregate statistics on GPU ───────────────────────────────────────────
     means = xp.array(image_means, dtype=xp.float64)
@@ -345,7 +367,7 @@ def run(image_folder, max_images, message, dataset_name, output_path="./results"
         image_means=means_np,
         image_vars=varss_np,
         output_path=f"{output_path}/exp1_histo_{len(message)}.png",
-        all_gaps_A=all_gaps_A,
+        gap_counter=gap_counter,
         dataset_name=dataset_name,
         message_size=message_bit_len
     )
@@ -398,24 +420,24 @@ def run(image_folder, max_images, message, dataset_name, output_path="./results"
 """)
 
     # ── Chi-square goodness-of-fit test against Geometric(0.5) ───────────────
-    k_vals_test = np.arange(1, 16)
-    theo_pmf    = 0.5 * (0.5 ** (k_vals_test - 1))
-    tail_prob   = 1.0 - theo_pmf.sum()
+    # k_vals_test = np.arange(1, 16)
+    # theo_pmf    = 0.5 * (0.5 ** (k_vals_test - 1))
+    # tail_prob   = 1.0 - theo_pmf.sum()
 
-    # all_gaps_A is already a plain Python list (CPU)
-    gaps_np  = np.array(all_gaps_A)
-    observed = np.array(
-        [np.sum(gaps_np == k) for k in k_vals_test] +
-        [np.sum(gaps_np >= 16)]
-    )
-    expected = np.append(theo_pmf, tail_prob) * len(all_gaps_A)
+    # # all_gaps_A is already a plain Python list (CPU)
+    # gaps_np  = np.array(all_gaps_A)
+    # observed = np.array(
+    #     [np.sum(gaps_np == k) for k in k_vals_test] +
+    #     [np.sum(gaps_np >= 16)]
+    # )
+    # expected = np.append(theo_pmf, tail_prob) * len(all_gaps_A)
 
-    chi2_stat, chi2_p = stats.chisquare(observed, expected)
-    print(f"Chi-square GoF test (vs Geometric(0.5)):")
-    print(f"  chi2={chi2_stat:.4f}, df=15, p={chi2_p:.4f}")
-    print(f"  Total gaps: {len(all_gaps_A):,}  (Group A images only)")
-    print(f"  Note: with ~70M samples, p-value reflects sample size sensitivity.")
-    print(f"  The chi2 statistic magnitude is the meaningful measure of fit.")
+    # chi2_stat, chi2_p = stats.chisquare(observed, expected)
+    # print(f"Chi-square GoF test (vs Geometric(0.5)):")
+    # print(f"  chi2={chi2_stat:.4f}, df=15, p={chi2_p:.4f}")
+    # print(f"  Total gaps: {len(all_gaps_A):,}  (Group A images only)")
+    # print(f"  Note: with ~70M samples, p-value reflects sample size sensitivity.")
+    # print(f"  The chi2 statistic magnitude is the meaningful measure of fit.")
 
     # ── Save CSV ──────────────────────────────────────────────────────────────
     out = f"{output_path}/exp1_{len(message)}.csv"
